@@ -9,6 +9,23 @@ Each metric returns (score: float, detail: str) where:
 import numpy as np
 
 
+def _safe_col_to_float(df, col: str) -> np.ndarray | None:
+    """Safely extract a column as a 1D float array, handling array-valued columns."""
+    try:
+        raw = df[col].values
+        # If it's already numeric scalars, just cast
+        if raw.dtype in (np.float32, np.float64, np.int32, np.int64, float, int):
+            return raw.astype(np.float64)
+        # Try direct cast (works for scalar object columns)
+        result = raw.astype(np.float64)
+        if result.ndim == 1:
+            return result
+        return None
+    except (ValueError, TypeError):
+        # Array-valued column — can't use as 1D, skip
+        return None
+
+
 def metric_smoothness(df, action_cols: list) -> tuple:
     """
     LDLJ (Log Dimensionless Jerk) proxy — lower jerk = smoother.
@@ -23,9 +40,12 @@ def metric_smoothness(df, action_cols: list) -> tuple:
     for col in action_cols:
         if col not in df.columns:
             continue
-        vals = df[col].values.astype(float)
-        if len(vals) < 4:
+        vals = _safe_col_to_float(df, col)
+        if vals is None or len(vals) < 4:
             continue
+        # Guard against NaN
+        if np.any(np.isnan(vals)):
+            vals = np.nan_to_num(vals, nan=0.0)
         vel = np.diff(vals)
         acc = np.diff(vel)
         jerk = np.diff(acc)
@@ -58,7 +78,11 @@ def metric_static_periods(df, action_cols: list) -> tuple:
     all_actions = []
     for col in action_cols:
         if col in df.columns:
-            all_actions.append(df[col].values.astype(float))
+            vals = _safe_col_to_float(df, col)
+            if vals is not None:
+                if np.any(np.isnan(vals)):
+                    vals = np.nan_to_num(vals, nan=0.0)
+                all_actions.append(vals)
 
     if not all_actions:
         return 8.0, "no_action_data"
@@ -88,8 +112,8 @@ def metric_gripper_chatter(df) -> tuple:
         return 8.0, "no_gripper_data"
 
     col = gripper_cols[0]
-    vals = df[col].values.astype(float)
-    if len(vals) < 4:
+    vals = _safe_col_to_float(df, col)
+    if vals is None or len(vals) < 4:
         return 8.0, "insufficient_data"
 
     val_range = vals.max() - vals.min()
@@ -155,9 +179,11 @@ def metric_action_saturation(df, action_cols: list) -> tuple:
     for col in action_cols:
         if col not in df.columns:
             continue
-        vals = df[col].values.astype(float)
-        if len(vals) < 2:
+        vals = _safe_col_to_float(df, col)
+        if vals is None or len(vals) < 2:
             continue
+        if np.any(np.isnan(vals)):
+            vals = np.nan_to_num(vals, nan=0.0)
         vmin, vmax = vals.min(), vals.max()
         val_range = vmax - vmin
         if val_range < 1e-6:
