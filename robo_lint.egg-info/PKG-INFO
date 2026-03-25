@@ -1,0 +1,201 @@
+Metadata-Version: 2.4
+Name: robo-lint
+Version: 0.1.0
+Summary: Robot dataset quality auditor for LeRobot training pipelines
+Author-email: Christian Nyamekye <autonomousnyamekye@gmail.com>
+License: MIT
+Project-URL: Homepage, https://github.com/ChristianNyamekye/robo-lint
+Project-URL: Documentation, https://github.com/ChristianNyamekye/robo-lint#readme
+Project-URL: Issues, https://github.com/ChristianNyamekye/robo-lint/issues
+Keywords: robotics,lerobot,dataset,quality,imitation-learning,data-quality
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Classifier: Topic :: Software Development :: Quality Assurance
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: numpy>=1.21
+Requires-Dist: pandas>=1.3
+Requires-Dist: pyarrow>=8.0
+Provides-Extra: hf
+Requires-Dist: huggingface-hub>=0.14; extra == "hf"
+Provides-Extra: all
+Requires-Dist: huggingface-hub>=0.14; extra == "all"
+Requires-Dist: gradio>=4.0; extra == "all"
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: ruff>=0.1; extra == "dev"
+Dynamic: license-file
+
+# 🤖 robo-lint
+
+**Robot dataset quality auditor for LeRobot training pipelines.**
+
+Stop training on garbage. `robo-lint` analyzes your robot demonstration datasets and tells you exactly which episodes to keep, trim, or delete — with per-episode scores and training impact estimates.
+
+[![PyPI version](https://badge.fury.io/py/robo-lint.svg)](https://pypi.org/project/robo-lint/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+
+## Why?
+
+Imitation learning is only as good as your demonstrations. But robot datasets are messy:
+
+- **Jerky motions** → policy learns noise, not intent
+- **Dead time / idle periods** → policy learns to do nothing mid-task
+- **Gripper chatter** → rapid open/close oscillations confuse grasp learning
+- **Dropped frames** → timing assumptions break at inference
+- **Hardware saturation** → actions clipped at limits hide intent
+
+`robo-lint` catches all of this with 6 physics-informed metrics, giving you a 0-10 quality score per episode and a surgical fix plan.
+
+### Validated Results
+
+- **91.7% precision/recall** detecting corrupted episodes
+- **2.7% val MSE improvement** when filtering (matches clean upper bound)
+- Tested on ALOHA, PushT, and community hackathon datasets
+
+## Install
+
+```bash
+pip install robo-lint
+```
+
+For HuggingFace Hub datasets:
+```bash
+pip install "robo-lint[hf]"
+```
+
+## Quick Start
+
+### Audit a local dataset
+```bash
+robo-lint ./my_lerobot_dataset
+```
+
+### Audit a HuggingFace dataset
+```bash
+robo-lint hf://lerobot/aloha_static_coffee
+```
+
+### Get JSON report
+```bash
+robo-lint ./my_dataset --json > report.json
+```
+
+### Get just the delete list (pipe to your training script)
+```bash
+robo-lint ./my_dataset --delete-list | xargs -I {} echo "Excluding episode {}"
+```
+
+## Output
+
+```
+==============================================================
+  robo-lint — Robot Dataset Quality Audit
+==============================================================
+
+  Source:   ./my_dataset
+  Episodes: 90
+  Avg Quality: 7.3/10
+
+  Quality Distribution: [████████████████████████████████████████]
+    KEEP 72  TRIM 14  DELETE 4
+    Usable: 80.0%
+
+  Top Issues:
+    • moderate jerk (×8 episodes)
+    • significant idle time (×6 episodes)
+
+  Recommendations:
+    → Delete 4 episodes → estimated +2% training success rate improvement
+    → Inspect 14 borderline episodes before including in training
+
+  Per-Episode Fix Plan:
+  -------------------------------------------------------
+    Ep  Score  Action    Reason
+  -------------------------------------------------------
+    23   3.2   DELETE    Too many issues: high_jerk, mostly_static
+    41   3.8   DELETE    Too many issues: severe_gripper_chatter
+    ...
+```
+
+## Metrics
+
+| Metric | What it catches | Weight |
+|--------|----------------|--------|
+| **Smoothness** (LDLJ) | Jerky, twitchy demonstrations | 20% |
+| **Static Periods** | Long idle time / dead zones | 20% |
+| **Gripper Chatter** | Rapid open/close oscillations | 15% |
+| **Timestamp Regularity** | Dropped frames, jitter | 15% |
+| **Action Saturation** | Time at hardware limits | 15% |
+| **Episode Length** | Too short or suspiciously long | 15% |
+
+Each metric scores 0-10. The weighted composite determines the recommendation:
+- **≥ 7.5** → KEEP (include in training)
+- **5.0-7.5** → TRIM (usable but inspect)
+- **< 5.0** → DELETE (remove from training)
+
+## Python API
+
+```python
+from robo_lint import load_dataset, analyze_dataset, score_episode
+
+# Load and analyze
+dataset = load_dataset("./my_dataset")
+report = analyze_dataset(dataset)
+
+# Check results
+print(f"Average quality: {report['average_quality_score']}/10")
+print(f"Episodes to delete: {report['delete_count']}")
+
+# Get delete list for your training script
+to_delete = [
+    ep["episode_index"]
+    for ep in report["episodes"]
+    if ep["recommendation"] == "DELETE"
+]
+
+# Per-episode scoring
+for ep_idx, df in dataset["episodes"].items():
+    result = score_episode(ep_idx, df, dataset["meta"])
+    if result["recommendation"] == "DELETE":
+        print(f"  Episode {ep_idx}: {result['reason']}")
+```
+
+## Integration with LeRobot
+
+```python
+# Filter bad episodes before training
+from robo_lint import load_dataset, analyze_dataset
+
+report = analyze_dataset(load_dataset("./my_dataset"))
+exclude = {ep["episode_index"] for ep in report["episodes"] if ep["recommendation"] == "DELETE"}
+
+# Pass to your training config
+# episode_indices = [i for i in range(num_episodes) if i not in exclude]
+```
+
+## Contributing
+
+```bash
+git clone https://github.com/ChristianNyamekye/robo-lint
+cd robo-lint
+pip install -e ".[dev]"
+pytest
+```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+---
+
+Built by [Christian Nyamekye](https://github.com/ChristianNyamekye) for the LeRobot ecosystem.

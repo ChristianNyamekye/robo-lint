@@ -1,0 +1,2 @@
+[console_scripts]
+robo-lint = robo_lint.cli:main

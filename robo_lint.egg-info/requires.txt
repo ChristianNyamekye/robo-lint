@@ -1,0 +1,14 @@
+numpy>=1.21
+pandas>=1.3
+pyarrow>=8.0
+
+[all]
+huggingface-hub>=0.14
+gradio>=4.0
+
+[dev]
+pytest>=7.0
+ruff>=0.1
+
+[hf]
+huggingface-hub>=0.14
